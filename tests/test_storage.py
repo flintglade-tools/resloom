@@ -281,7 +281,7 @@ def test_report_templates_versioning_pdf():
 
         # LLM stub (no ollama expected)
         narr = llm_assist_narrative("test context")
-        assert "LLM" in narr or "assist" in narr.lower()
+        assert narr is None
 
 
 def test_search_exports_pack():
@@ -341,3 +341,21 @@ def test_project_csv_export_import_roundtrip_updates_existing_project():
         assert loaded.title == "CSV Roundtrip Updated"
         assert loaded.notes == "keep these notes"
         assert loaded.links == ["https://example.edu/a", "file:///tmp/b"]
+
+
+def test_csv_exports_neutralise_formulas_and_import_restores_them():
+    import csv
+    import io
+
+    with tempfile.TemporaryDirectory() as td:
+        s = Storage(Path(td) / "csv.db")
+        p = Project(title="=HYPERLINK(\"http://x\")", principal_investigator="@admin", start_date=date(2026, 1, 1))
+        s.upsert_project(p)
+        out = export_projects_csv([p], {p.id: []})
+        row = next(r for r in csv.DictReader(io.StringIO(out)) if r["id"] == p.id)
+        assert row["title"].startswith("'=")
+        assert row["principal_investigator"] == "'@admin"
+        assert "'=" not in export_deadlines_csv([]) and "'=" not in export_resources_csv([])
+        imported = import_projects_from_csv(s, out)
+        assert imported[0].title == p.title
+        assert imported[0].principal_investigator == "@admin"

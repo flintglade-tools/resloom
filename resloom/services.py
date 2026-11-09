@@ -11,8 +11,8 @@ import uuid
 from typing import List, Optional
 
 from .models import (
-    Booking, ComplianceDeadline, Project, Resource, ReportDraft, DeadlineStatus,
-    ProjectExpenditure, ProjectStatus, DeadlineType, BookingStatus, AppSettings,
+    Booking, ComplianceDeadline, Project, ReportDraft, DeadlineStatus,
+    ProjectExpenditure, ProjectStatus, DeadlineType, BookingStatus,
 )
 from .storage import Storage
 
@@ -84,7 +84,6 @@ def create_report_draft(
     Falls back gracefully if Ollama unavailable.
     """
     p = storage.get_project(project_id) if project_id else None
-    summary = get_project_summary(storage, project_id) if project_id else {}
     deadlines = [d for d in storage.list_deadlines() if d.project_id == project_id] if project_id else []
     bookings = [b for b in storage.list_bookings() if b.project_id == project_id] if project_id else []
     exps = storage.list_expenditures(project_id) if project_id else []
@@ -121,8 +120,7 @@ def create_report_draft(
         narrative = "*[Summarize key results, challenges, milestones.]*"
         if use_llm and p:
             ctx = f"Project {p.title} status {p.status.value} budget {p.budget_usd} deadlines {len(deadlines)} bookings {len(bookings)}"
-            llm_text = llm_assist_narrative(ctx)
-            narrative = llm_text
+            narrative = llm_assist_narrative(ctx) or narrative
         lines.append(narrative)
         lines.append("\n## Next Steps\n*[List action items.]*\n")
 
@@ -159,7 +157,7 @@ def create_report_draft(
     lines.append(
         "\n---\n_Generated on "
         + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        + f" by Resloom v{_ver}. Always review and edit before use._"
+        + f" by Resloom v{_ver}._"
     )
 
     draft = ReportDraft(
@@ -174,11 +172,10 @@ def create_report_draft(
     return storage.upsert_report(draft)
 
 
-def llm_assist_narrative(context: str) -> str:
-    """Optional local LLM assist via Ollama (http://localhost:11434).
+def llm_assist_narrative(context: str) -> str | None:
+    """Draft a narrative with a local Ollama server (http://localhost:11434).
 
-    Returns narrative text that is ALWAYS editable by human.
-    Graceful fallback if no Ollama running. Never auto-commits.
+    Returns None when Ollama is not reachable or returns no text.
     """
     try:
         import urllib.request
@@ -203,14 +200,10 @@ def llm_assist_narrative(context: str) -> str:
             resp = jsonlib.loads(r.read().decode("utf-8"))
             text = resp.get("response", "").strip()
             if text:
-                return text + "\n\n_(LLM-assisted draft — human review and edit required)_"
+                return text
     except Exception:
         pass
-    return (
-        "*[LLM assist not available (Ollama not running or unreachable). "
-        "Populate this section manually from source data.]*\n\n"
-        "Key observations from records:\n- ...\n- ..."
-    )
+    return None
 
 
 def save_edited_report(storage: Storage, report: ReportDraft, new_markdown: str, editor: str = "User") -> ReportDraft:
@@ -283,16 +276,6 @@ def export_report_as_pdf_bytes(draft: ReportDraft, project_name: str = "Research
             pdf.cell(0, 5, _pdf_safe_text(line), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         except Exception:
             pass
-    pdf.ln(3)
-    pdf.set_font("Helvetica", "I", 7)
-    pdf.cell(
-        0,
-        5,
-        "Human-edited Resloom report. Review before distribution.",
-        new_x=XPos.LMARGIN,
-        new_y=YPos.NEXT,
-        align="C",
-    )
     return bytes(pdf.output())
 
 
@@ -325,6 +308,26 @@ def get_project_budget_status(storage: Storage, project: Project) -> dict:
         "num_expenditures": len(exps),
     }
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value):
+    """Prefix text that a spreadsheet would run as a formula with an apostrophe."""
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+def _csv_row(values):
+    return [_csv_cell(v) for v in values]
+
+
+def _csv_value(text: str) -> str:
+    """Undo _csv_cell for a value read back from an exported CSV."""
+    if len(text) > 1 and text[0] == "'" and text[1:].startswith(_FORMULA_PREFIXES):
+        return text[1:]
+    return text
+
 
 def export_projects_csv(projects: list[Project], expenditures_by_project: dict[str, list[ProjectExpenditure]]) -> str:
     """Return CSV string for projects + simple spent summary. Stdlib only."""
@@ -339,7 +342,7 @@ def export_projects_csv(projects: list[Project], expenditures_by_project: dict[s
     for p in projects:
         exps = expenditures_by_project.get(p.id, [])
         spent = sum(e.amount_usd for e in exps)
-        writer.writerow([
+        writer.writerow(_csv_row([
             p.id,
             p.title,
             p.principal_investigator,
@@ -352,7 +355,7 @@ def export_projects_csv(projects: list[Project], expenditures_by_project: dict[s
             round(spent, 2),
             (p.notes or "").replace("\n", " ")[:200],
             ";".join(p.links),
-        ])
+        ]))
     return output.getvalue()
 
 
@@ -368,7 +371,7 @@ def import_projects_from_csv(storage: Storage, csv_text: str) -> list[Project]:
     created = []
     for row in reader:
         normalized = {
-            (k or "").strip().lower().replace(" ", "_"): (v or "")
+            (k or "").strip().lower().replace(" ", "_"): _csv_value(v or "")
             for k, v in row.items()
         }
 
@@ -461,7 +464,6 @@ def snooze_deadline(storage: Storage, deadline_id: str, days: int, note: str = "
 def get_compliance_calendar(storage: Storage, year: int, month: int) -> dict:
     """Return dict date -> list of deadlines for a month grid. Uses stdlib calendar."""
     import calendar
-    from datetime import date as dt_date
     cal = calendar.Calendar(firstweekday=6)  # Sunday start for US labs
     month_days = list(cal.itermonthdates(year, month))
     dls = storage.list_deadlines(include_overdue=True)
@@ -621,7 +623,7 @@ def export_deadlines_csv(deadlines: list) -> str:
     writer = csv.writer(output)
     writer.writerow(["id", "title", "type", "due_date", "status", "project_id", "reminder_days"])
     for d in deadlines:
-        writer.writerow([d.id, d.title, d.type.value, d.due_date, d.status.value, d.project_id or "", d.reminder_days_before])
+        writer.writerow(_csv_row([d.id, d.title, d.type.value, d.due_date, d.status.value, d.project_id or "", d.reminder_days_before]))
     return output.getvalue()
 
 
@@ -633,7 +635,7 @@ def export_resources_csv(resources: list) -> str:
     writer = csv.writer(output)
     writer.writerow(["id", "name", "type", "location", "capacity", "is_active"])
     for r in resources:
-        writer.writerow([r.id, r.name, r.type.value, r.location or "", r.capacity or "", r.is_active])
+        writer.writerow(_csv_row([r.id, r.name, r.type.value, r.location or "", r.capacity or "", r.is_active]))
     return output.getvalue()
 
 
@@ -645,7 +647,7 @@ def export_expenditures_csv(expenditures: list[ProjectExpenditure]) -> str:
     writer = csv.writer(output)
     writer.writerow(["id", "project_id", "amount_usd", "date", "category", "description"])
     for e in expenditures:
-        writer.writerow([e.id, e.project_id, e.amount_usd, e.date, e.category, e.description or ""])
+        writer.writerow(_csv_row([e.id, e.project_id, e.amount_usd, e.date, e.category, e.description or ""]))
     return output.getvalue()
 
 

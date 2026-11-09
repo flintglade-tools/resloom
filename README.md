@@ -30,7 +30,7 @@ With Docker:
 docker compose up -d --build
 ```
 
-The container stores its database in `./data` and publishes the app on `127.0.0.1:8501`.
+The container runs as an unprivileged user, keeps its database in the `resloom-data` volume, and publishes the app on `127.0.0.1:8501`.
 
 ## Test
 
@@ -53,7 +53,7 @@ Each record type has its own SQLite table, and each row holds the record as JSON
 
 ## Access
 
-Resloom has no sign-in. It listens on `127.0.0.1` by default, so only the local machine can reach it. Anyone who can open the page can read and change every record.
+Resloom has no sign-in. It listens on `127.0.0.1` by default and answers only pages opened as `127.0.0.1`, `localhost` or `[::1]`, so other machines and pages reached through another host name get no data. Anyone who can open the page locally can read and change every record. CSV exports prefix cells that start with `=`, `+`, `-` or `@` with an apostrophe so spreadsheets do not run them as formulas.
 
 ## License
 

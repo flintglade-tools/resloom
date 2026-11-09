@@ -8,5 +8,8 @@ services:
       - PYTHONUNBUFFERED=1
       - RESLOOM_DB=/app/data/resloom.db
     volumes:
-      - ./data:/app/data
+      - resloom-data:/app/data
     restart: unless-stopped
+
+volumes:
+  resloom-data:

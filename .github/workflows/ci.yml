@@ -24,6 +24,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -r requirements-dev.txt
+      - run: ruff check .
       - run: python -m pytest
 
   docker:
@@ -38,8 +39,12 @@ jobs:
         run: |
           docker run -d --name resloom -p 127.0.0.1:8501:8501 resloom:ci
           for i in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:8501/_stcore/health; then echo; exit 0; fi
+            if curl -sf http://127.0.0.1:8501/_stcore/health; then echo; break; fi
+            if [ "$i" = 60 ]; then docker logs resloom; exit 1; fi
             sleep 1
           done
-          docker logs resloom
-          exit 1
+      - name: The unprivileged user can create the database
+        run: |
+          test "$(docker exec resloom id -u)" != 0
+          docker exec resloom python -c "from resloom.storage import get_storage; get_storage('/app/data/resloom.db')"
+          docker exec resloom test -s /app/data/resloom.db

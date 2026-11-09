@@ -11,8 +11,10 @@ COPY . .
 ENV RESLOOM_DB=/app/data/resloom.db
 ENV PYTHONUNBUFFERED=1
 
-# Create data dir (volume will mount over it)
-RUN mkdir -p /app/data
+RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin resloom \
+    && mkdir -p /app/data \
+    && chown resloom:resloom /app/data
+USER resloom
 
 EXPOSE 8501
 

@@ -6,11 +6,10 @@
 - Simple, auditable, easy to export/backup
 """
 
-import json
 import sqlite3
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Type, TypeVar
+from typing import List, Optional, TypeVar
 
 from .models import (
     Project, ComplianceDeadline, Resource, Booking, ReportDraft, AppSettings,
@@ -220,7 +219,7 @@ class Storage:
         rep = ReportDraft(
             project_id=p1.id,
             title="Q2 2026 Progress Summary - Neuroplasticity",
-            content_markdown="# Neuroplasticity in Aging Cohorts\n\n**PI:** Dr. Elena Vargas\n**Period:** Q2 2026\n\n## Key Activities\n- Recruited 42 new participants\n- Completed 38 baseline MRI scans\n- IRB annual continuation submitted\n\n## Budget Status\nSpent: $312k of $1.25M (24.9%)\n\n## Risks / Next Steps\n- Staff turnover in imaging core\n- Next milestone: mid-study analysis (Aug 2026)\n\n*This draft was auto-generated from current records. Please edit before finalizing.*",
+            content_markdown="# Neuroplasticity in Aging Cohorts\n\n**PI:** Dr. Elena Vargas\n**Period:** Q2 2026\n\n## Key Activities\n- Recruited 42 new participants\n- Completed 38 baseline MRI scans\n- IRB annual continuation submitted\n\n## Budget Status\nSpent: $312k of $1.25M (24.9%)\n\n## Risks / Next Steps\n- Staff turnover in imaging core\n- Next milestone: mid-study analysis (Aug 2026)",
         )
         self.upsert_report(rep)
 

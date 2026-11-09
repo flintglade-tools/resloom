@@ -7,19 +7,20 @@ Multi-view workspace for research groups:
 - Resources & Bookings
 - Reports
 
-Local-first. All edits are immediate. Human oversight required on reports.
+Local-first. All edits are immediate.
 """
 
 import os
 import calendar
 from datetime import date, datetime, timedelta
-from pathlib import Path
+
+import html
 
 import streamlit as st
 
+from resloom.access import host_allowed
 from resloom.models import (
-    Project, ComplianceDeadline, Resource, Booking, ReportDraft,
-    ProjectStatus, DeadlineType, DeadlineStatus, ResourceType, BookingStatus,
+    Project, ComplianceDeadline, Resource, Booking, ProjectStatus, DeadlineType, DeadlineStatus, ResourceType, BookingStatus,
     ProjectExpenditure,
 )
 from resloom.storage import get_storage
@@ -39,6 +40,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Serve only pages opened as 127.0.0.1, localhost or [::1]. Requests from a page that reached the
+# server under another host name (DNS rebinding) stop here, before any data is read.
+if not host_allowed(st.context.headers.get("Host")):
+    st.error("Resloom only answers on 127.0.0.1, localhost or [::1].")
+    st.stop()
 
 # --- Storage (cached for session) ---
 @st.cache_resource
@@ -108,7 +115,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### Quick Help")
-    st.caption("All data is local. Edits save immediately.\nReports require human review before use.")
+    st.caption("All data is local. Edits save immediately.")
     if st.button("Reload data (clear cache)", use_container_width=True):
         st.cache_resource.clear()
         st.rerun()
@@ -178,17 +185,21 @@ with tab_projects:
     with c_imp:
         st.markdown("**CSV Import** (title, principal_investigator, status, start_date, ...)")
         up = st.file_uploader("Upload projects CSV", type=["csv"], key="proj_csv", label_visibility="collapsed")
-        if up is not None:
+        # The uploaded file stays in the widget across reruns, so import each upload only once.
+        if up is not None and st.session_state.get("proj_csv_imported") != up.file_id:
+            st.session_state["proj_csv_imported"] = up.file_id
             try:
                 text = up.read().decode("utf-8")
                 new_ps = import_projects_from_csv(storage, text)
                 if new_ps:
-                    st.success(f"Imported/updated {len(new_ps)} project(s)")
+                    st.session_state["proj_csv_message"] = f"Imported/updated {len(new_ps)} project(s)"
                     st.rerun()
                 else:
                     st.warning("No valid rows found.")
             except Exception as e:
                 st.error(f"Import error: {e}")
+        if "proj_csv_message" in st.session_state:
+            st.success(st.session_state.pop("proj_csv_message"))
 
     with c_exp:
         if st.button("Export All Projects (CSV)", use_container_width=True):
@@ -481,7 +492,7 @@ with tab_compliance:
                         st.caption(label)
                         for dd in dls_on_day[:2]:
                             color = "red" if dd.is_overdue() else "orange"
-                            st.markdown(f"<span style='color:{color}; font-size:0.8em'>{dd.title[:18]}</span>", unsafe_allow_html=True)
+                            st.markdown(f"<span style='color:{color}; font-size:0.8em'>{html.escape(dd.title[:18])}</span>", unsafe_allow_html=True)
                 else:
                     cols[i].caption(label)
         st.caption(" ")
@@ -739,7 +750,6 @@ with tab_resources:
 # ============================================================
 with tab_reports:
     st.subheader("Progress & Summary Reports")
-    st.warning("**Human oversight required.** All generated content must be reviewed and edited before any external use or submission.", icon="⚠️")
 
     st.markdown("### Create Draft Report")
     with st.form("create_report"):
@@ -754,9 +764,9 @@ with tab_reports:
 
         author = st.text_input("Prepared by", value="Research Coordinator")
         use_llm = st.checkbox(
-            "Assist with local LLM (Ollama at localhost:11434) — always produces editable draft",
+            "Draft the narrative with a local LLM (Ollama at localhost:11434)",
             value=False,
-            help="Opt-in. Output is an editable draft. Falls back to the template if Ollama is not running."
+            help="Falls back to the template if Ollama is not running."
         )
 
         if st.form_submit_button("Generate Draft"):
@@ -809,7 +819,7 @@ with tab_reports:
                 c1, c2, c3 = st.columns(3)
                 if c1.button("Save edits (new version)", key=f"save-rep-{rep.id}"):
                     updated = save_edited_report(storage, rep, edited, "User")
-                    st.success(f"Saved v{updated.version}. Human-edited.")
+                    st.success(f"Saved v{updated.version}.")
                     st.rerun()
 
                 safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in rep.title)[:60]
@@ -836,7 +846,6 @@ with tab_reports:
     else:
         st.info("Generate a report draft above to get started.")
 
-    st.caption("LLM (if used) is opt-in local-only and always produces a draft requiring human review/edit. No content is sent without explicit toggle.")
 
 # --- Footer ---
 st.divider()
