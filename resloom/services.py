@@ -309,11 +309,13 @@ def get_project_budget_status(storage: Storage, project: Project) -> dict:
     }
 
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+# A leading apostrophe is escaped too, so text that already starts with one survives the round trip.
+_ESCAPED = _FORMULA_PREFIXES + ("'",)
 
 
 def _csv_cell(value):
-    """Prefix text that a spreadsheet would run as a formula with an apostrophe."""
-    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+    """Prefix text that a spreadsheet would run as a formula, or that starts with an apostrophe."""
+    if isinstance(value, str) and value.startswith(_ESCAPED):
         return "'" + value
     return value
 
@@ -324,7 +326,7 @@ def _csv_row(values):
 
 def _csv_value(text: str) -> str:
     """Undo _csv_cell for a value read back from an exported CSV."""
-    if len(text) > 1 and text[0] == "'" and text[1:].startswith(_FORMULA_PREFIXES):
+    if len(text) > 1 and text[0] == "'" and text[1:].startswith(_ESCAPED):
         return text[1:]
     return text
 

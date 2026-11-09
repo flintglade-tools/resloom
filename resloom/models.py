@@ -95,8 +95,7 @@ class Project(BaseModel):
 class ComplianceDeadline(BaseModel):
     """Compliance / regulatory deadline.
 
-    Human oversight: status changes and notes always user-editable.
-    Alerts are shown in the app; no email is sent.
+    Status and notes are edited in the app. Alerts are shown in the app; no email is sent.
     """
     id: str = Field(default_factory=_new_id)
     project_id: Optional[str] = None

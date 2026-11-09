@@ -350,12 +350,19 @@ def test_csv_exports_neutralise_formulas_and_import_restores_them():
     with tempfile.TemporaryDirectory() as td:
         s = Storage(Path(td) / "csv.db")
         p = Project(title="=HYPERLINK(\"http://x\")", principal_investigator="@admin", start_date=date(2026, 1, 1))
+        # Text that already starts with an apostrophe, alone or before a formula character.
+        q = Project(title="'=SUM(A1:A2)", principal_investigator="'quoted", start_date=date(2026, 1, 1))
         s.upsert_project(p)
-        out = export_projects_csv([p], {p.id: []})
-        row = next(r for r in csv.DictReader(io.StringIO(out)) if r["id"] == p.id)
-        assert row["title"].startswith("'=")
-        assert row["principal_investigator"] == "'@admin"
+        s.upsert_project(q)
+        out = export_projects_csv([p, q], {p.id: [], q.id: []})
+        rows = {r["id"]: r for r in csv.DictReader(io.StringIO(out))}
+        assert rows[p.id]["title"].startswith("'=")
+        assert rows[p.id]["principal_investigator"] == "'@admin"
+        assert rows[q.id]["title"] == "''=SUM(A1:A2)"
+        assert rows[q.id]["principal_investigator"] == "''quoted"
         assert "'=" not in export_deadlines_csv([]) and "'=" not in export_resources_csv([])
-        imported = import_projects_from_csv(s, out)
-        assert imported[0].title == p.title
-        assert imported[0].principal_investigator == "@admin"
+        imported = {x.id: x for x in import_projects_from_csv(s, out)}
+        assert imported[p.id].title == p.title
+        assert imported[p.id].principal_investigator == "@admin"
+        assert imported[q.id].title == "'=SUM(A1:A2)"
+        assert imported[q.id].principal_investigator == "'quoted"
