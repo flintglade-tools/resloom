@@ -1,0 +1,12 @@
+services:
+  resloom:
+    build: .
+    container_name: resloom
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RESLOOM_DB=/app/data/resloom.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
