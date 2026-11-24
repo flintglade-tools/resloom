@@ -2,6 +2,7 @@
 
 import io
 import json
+import sqlite3
 import tempfile
 import zipfile
 from pathlib import Path
@@ -250,6 +251,27 @@ def test_recurring_bookings_reject_conflicting_later_occurrence_atomically():
 
         bookings = s.list_bookings(resource_id=r.id)
         assert [b.id for b in bookings] == [existing.id]
+
+
+def test_recurring_bookings_roll_back_when_later_write_fails(tmp_path):
+    db = tmp_path / "bookings.db"
+    storage = Storage(db)
+    start = datetime(2026, 1, 1, 9)
+    later = (start + timedelta(weeks=1)).isoformat()
+    base = Booking(
+        resource_id="rollback-rig", booked_by="Alice", purpose="Test series",
+        start=start, end=start + timedelta(hours=1),
+    )
+    with sqlite3.connect(db) as conn:
+        conn.execute(f"""
+            CREATE TRIGGER fail_later_booking BEFORE INSERT ON bookings
+            WHEN NEW.start = '{later}'
+            BEGIN SELECT RAISE(ABORT, 'second booking failed'); END
+        """)
+
+    with pytest.raises(sqlite3.IntegrityError, match="second booking failed"):
+        create_recurring_bookings(storage, base, "weekly", 2)
+    assert storage.list_bookings(resource_id=base.resource_id) == []
 
 
 def test_report_templates_versioning_pdf():
