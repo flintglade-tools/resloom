@@ -327,6 +327,78 @@ def test_single_booking_checks_for_conflicts_after_waiting_for_series(tmp_path, 
     assert {b.booked_by for b in single_storage.list_bookings(base.resource_id)} == {"Alice"}
 
 
+@pytest.mark.parametrize("remove", [False, True])
+def test_stale_approval_cannot_revive_booking(tmp_path, remove):
+    db = tmp_path / "bookings.db"
+    approver, other = Storage(db), Storage(db)
+    start = datetime(2026, 1, 1, 9)
+    booking = Booking(
+        resource_id="status-rig", booked_by="Alice", purpose="Pending booking",
+        start=start, end=start + timedelta(hours=1), status=BookingStatus.PENDING,
+    )
+    approver.upsert_booking(booking)
+    [stale] = approver.list_bookings(booking.resource_id)
+    if remove:
+        assert other.delete_booking(booking.id)
+    else:
+        assert other.transition_booking_status(
+            booking.id, BookingStatus.CANCELLED, (BookingStatus.PENDING, BookingStatus.CONFIRMED)
+        )
+    assert not approver.transition_booking_status(
+        stale.id, BookingStatus.CONFIRMED, (stale.status,)
+    )
+    assert [b.status for b in approver.list_bookings(booking.resource_id)] == (
+        [] if remove else [BookingStatus.CANCELLED]
+    )
+
+
+def test_in_memory_booking_status_waits_for_series_transaction(monkeypatch):
+    storage = Storage(":memory:")
+    start = datetime(2026, 1, 1, 9)
+    base = Booking(
+        resource_id="memory-rig", booked_by="Alice", purpose="Pending series",
+        start=start, end=start + timedelta(hours=1), status=BookingStatus.PENDING,
+    )
+    series_started, status_waiting, finish_series = Event(), Event(), Event()
+    lock = storage._booking_lock
+    write_booking = Storage._write_booking
+
+    class ObservedLock:
+        def __enter__(self):
+            if series_started.is_set():
+                status_waiting.set()
+            lock.acquire()
+
+        def __exit__(self, *exc):
+            lock.release()
+
+    def pause_series(conn, booking):
+        write_booking(conn, booking)
+        if booking.id == base.id:
+            series_started.set()
+            assert finish_series.wait(6)
+
+    monkeypatch.setattr(storage, "_booking_lock", ObservedLock())
+    monkeypatch.setattr(Storage, "_write_booking", staticmethod(pause_series))
+    with ThreadPoolExecutor(2) as pool:
+        series = pool.submit(create_recurring_bookings, storage, base, "weekly", 2)
+        try:
+            assert series_started.wait(4)
+            approve = pool.submit(
+                storage.transition_booking_status, base.id, BookingStatus.CONFIRMED,
+                (BookingStatus.PENDING,),
+            )
+            assert status_waiting.wait(4)
+            assert not approve.done()
+        finally:
+            finish_series.set()
+        assert len(series.result(timeout=4)) == 2
+        assert approve.result(timeout=4)
+    assert [b.status for b in storage.list_bookings(base.resource_id)] == [
+        BookingStatus.CONFIRMED, BookingStatus.PENDING,
+    ]
+
+
 def test_report_templates_versioning_pdf():
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "test.db"
