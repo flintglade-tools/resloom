@@ -7,9 +7,12 @@
 """
 
 import sqlite3
+import uuid
+from contextlib import closing, contextmanager, nullcontext
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, TypeVar
+from threading import Lock
+from typing import Callable, Iterator, List, Optional, TypeVar
 
 from .models import (
     Project, ComplianceDeadline, Resource, Booking, ReportDraft, AppSettings,
@@ -71,7 +74,15 @@ class Storage:
     def __init__(self, db_path: str | Path = "data/resloom.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._memory = str(self.db_path) == ":memory:"
+        self._db_location = (
+            f"file:resloom-{uuid.uuid4().hex}?mode=memory&cache=shared"
+            if self._memory else str(self.db_path.resolve())
+        )
+        self._booking_lock = Lock() if self._memory else nullcontext()
+        self._conn = sqlite3.connect(
+            self._db_location, uri=self._memory, check_same_thread=False
+        )
         self._conn.row_factory = sqlite3.Row
         self._init_db()
         self._ensure_seed()
@@ -354,29 +365,75 @@ class Storage:
         return rs
 
     # --- Bookings ---
-    def upsert_booking(self, b: Booking) -> Booking:
+    @staticmethod
+    def _write_booking(conn: sqlite3.Connection, b: Booking):
         data = b.model_dump_json()
-        self._conn.execute(
+        conn.execute(
             "INSERT OR REPLACE INTO bookings (id, data, start, end, resource_id) VALUES (?, ?, ?, ?, ?)",
             (b.id, data, b.start.isoformat(), b.end.isoformat(), b.resource_id),
         )
-        self._conn.commit()
+
+    def upsert_booking(self, b: Booking) -> Booking:
+        with self._booking_lock:
+            self._write_booking(self._conn, b)
+            self._conn.commit()
         return b
 
-    def list_bookings(self, resource_id: Optional[str] = None) -> List[Booking]:
+    @staticmethod
+    def _read_bookings(conn: sqlite3.Connection, resource_id: Optional[str]) -> List[Booking]:
         if resource_id:
-            rows = self._conn.execute("SELECT data FROM bookings WHERE resource_id=? ORDER BY start", (resource_id,)).fetchall()
+            rows = conn.execute("SELECT data FROM bookings WHERE resource_id=? ORDER BY start", (resource_id,)).fetchall()
         else:
-            rows = self._conn.execute("SELECT data FROM bookings ORDER BY start").fetchall()
+            rows = conn.execute("SELECT data FROM bookings ORDER BY start").fetchall()
         return [Booking.model_validate_json(r["data"]) for r in rows]
+
+    def list_bookings(self, resource_id: Optional[str] = None) -> List[Booking]:
+        with self._booking_lock:
+            return self._read_bookings(self._conn, resource_id)
 
     def get_bookings_for_resource(self, rid: str) -> List[Booking]:
         return self.list_bookings(resource_id=rid)
 
+    @contextmanager
+    def _booking_transaction(self) -> Iterator[sqlite3.Connection]:
+        # Separate connections isolate commits from other Streamlit operations.
+        # SQLite's shared-cache in-memory mode also needs a lock between booking operations.
+        with self._booking_lock:
+            with closing(sqlite3.connect(self._db_location, uri=self._memory)) as conn, conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.execute("BEGIN IMMEDIATE")
+                yield conn
+
+    def save_booking_series(
+        self, bookings: List[Booking], validate: Callable[[List[Booking]], None]
+    ) -> None:
+        """Validate and save a nonempty series for one resource in a single write transaction."""
+        with self._booking_transaction() as conn:
+            validate(self._read_bookings(conn, bookings[0].resource_id))
+            for booking in bookings:
+                self._write_booking(conn, booking)
+
+    def transition_booking_status(
+        self, bid: str, status: BookingStatus, from_statuses: tuple[BookingStatus, ...]
+    ) -> bool:
+        """Change the status of an existing booking when its current state permits it."""
+        with self._booking_transaction() as conn:
+            row = conn.execute("SELECT data FROM bookings WHERE id=?", (bid,)).fetchone()
+            if row is None:
+                return False
+            booking = Booking.model_validate_json(row["data"])
+            if booking.status not in from_statuses:
+                return False
+            booking.status = status
+            conn.execute("UPDATE bookings SET data=? WHERE id=?", (booking.model_dump_json(), bid))
+            return True
+
     def delete_booking(self, bid: str) -> bool:
-        cur = self._conn.execute("DELETE FROM bookings WHERE id=?", (bid,))
-        self._conn.commit()
-        return cur.rowcount > 0
+        with self._booking_lock:
+            cur = self._conn.execute("DELETE FROM bookings WHERE id=?", (bid,))
+            self._conn.commit()
+            return cur.rowcount > 0
 
     # --- Reports ---
     def upsert_report(self, rep: ReportDraft) -> ReportDraft:

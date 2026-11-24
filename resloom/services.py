@@ -46,6 +46,10 @@ def detect_booking_conflicts(storage: Storage, new_booking: Booking, exclude_id:
     Blackouts block everything. Normal bookings block each other.
     """
     existing = storage.get_bookings_for_resource(new_booking.resource_id)
+    return _booking_conflicts(existing, new_booking, exclude_id)
+
+
+def _booking_conflicts(existing: List[Booking], new_booking: Booking, exclude_id: Optional[str] = None) -> List[Booking]:
     conflicts = []
     for b in existing:
         if exclude_id and b.id == exclude_id:
@@ -494,19 +498,12 @@ def create_recurring_bookings(
     Supports 'weekly'. Raises ValueError before writing if any occurrence would
     overlap existing active bookings or another occurrence in the same series.
     """
-    group_id = base.recurrence_group_id or str(uuid.uuid4())
-    base.recurrence_group_id = group_id
+    if repeat != "none":
+        base.recurrence_group_id = base.recurrence_group_id or str(uuid.uuid4())
     candidates = [base]
 
-    if repeat != "weekly" or occurrences < 2:
-        conflicts = detect_booking_conflicts(storage, base)
-        if conflicts:
-            raise ValueError(f"Booking conflicts with {len(conflicts)} existing booking(s).")
-        storage.upsert_booking(base)
-        return [base]
-
     delta = timedelta(days=7)
-    for i in range(1, max(1, occurrences)):
+    for i in range(1, occurrences if repeat == "weekly" else 1):
         candidates.append(
             Booking(
                 resource_id=base.resource_id,
@@ -517,23 +514,25 @@ def create_recurring_bookings(
                 purpose=base.purpose,
                 status=base.status,
                 is_blackout=base.is_blackout,
-                recurrence_group_id=group_id,
+                recurrence_group_id=base.recurrence_group_id,
             )
         )
 
-    for i, candidate in enumerate(candidates):
-        conflicts = detect_booking_conflicts(storage, candidate)
-        if conflicts:
-            raise ValueError(
-                f"Occurrence {i + 1} conflicts with {len(conflicts)} existing booking(s): "
-                f"{candidate.start:%Y-%m-%d %H:%M}."
-            )
-        for prior in candidates[:i]:
-            if candidate.resource_id == prior.resource_id and _bookings_overlap(candidate, prior):
-                raise ValueError(f"Occurrence {i + 1} overlaps another booking in this series.")
+    def validate(existing: List[Booking]) -> None:
+        for i, candidate in enumerate(candidates):
+            conflicts = _booking_conflicts(existing, candidate)
+            if conflicts:
+                if len(candidates) == 1:
+                    raise ValueError(f"Booking conflicts with {len(conflicts)} existing booking(s).")
+                raise ValueError(
+                    f"Occurrence {i + 1} conflicts with {len(conflicts)} existing booking(s): "
+                    f"{candidate.start:%Y-%m-%d %H:%M}."
+                )
+            for prior in candidates[:i]:
+                if _bookings_overlap(candidate, prior):
+                    raise ValueError(f"Occurrence {i + 1} overlaps another booking in this series.")
 
-    for candidate in candidates:
-        storage.upsert_booking(candidate)
+    storage.save_booking_series(candidates, validate)
     return candidates
 
 

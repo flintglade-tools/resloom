@@ -629,10 +629,13 @@ with tab_resources:
             rname = res.name if res else b.resource_id
             st.write(f"- {b.start.strftime('%Y-%m-%d %H:%M')} | {rname} | {b.booked_by}: {b.purpose}")
             if st.button("Approve (confirm)", key=f"approve-{b.id}"):
-                b.status = BookingStatus.CONFIRMED
-                storage.upsert_booking(b)
-                st.success("Approved.")
-                st.rerun()
+                if storage.transition_booking_status(
+                    b.id, BookingStatus.CONFIRMED, (BookingStatus.PENDING,)
+                ):
+                    st.success("Approved.")
+                    st.rerun()
+                else:
+                    st.warning("This booking is no longer pending.")
     else:
         st.caption("No pending bookings.")
 
@@ -702,19 +705,18 @@ with tab_resources:
                                     for a in alts:
                                         st.write(f"  • {a.strftime('%Y-%m-%d %H:%M')}")
                             else:
-                                created_ok = False
-                                if repeat != "none" and occ > 1:
-                                    try:
-                                        created = create_recurring_bookings(storage, new_b, repeat, int(occ))
-                                        st.success(f"Created recurring series ({len(created)} bookings).")
-                                        created_ok = True
-                                    except ValueError as e:
-                                        st.error(str(e))
+                                recurring = repeat != "none" and occ > 1
+                                try:
+                                    created = create_recurring_bookings(
+                                        storage, new_b, repeat if recurring else "none", int(occ)
+                                    )
+                                except ValueError as e:
+                                    st.error(str(e))
                                 else:
-                                    storage.upsert_booking(new_b)
-                                    st.success("Booking created (pending approval if normal).")
-                                    created_ok = True
-                                if created_ok:
+                                    if recurring:
+                                        st.success(f"Created recurring series ({len(created)} bookings).")
+                                    else:
+                                        st.success("Booking created (pending approval if normal).")
                                     st.rerun()
 
     st.divider()
@@ -741,9 +743,12 @@ with tab_resources:
         rec = " (recurring)" if b.recurrence_group_id else ""
         st.write(f"- **{b.start.strftime('%Y-%m-%d %H:%M')}–{b.end.strftime('%H:%M')}** | {rname}{blk} | {stat}{rec} | {b.booked_by}: {b.purpose}")
         if st.button("Cancel", key=f"cancelb-{b.id}"):
-            b.status = BookingStatus.CANCELLED
-            storage.upsert_booking(b)
-            st.rerun()
+            if storage.transition_booking_status(
+                b.id, BookingStatus.CANCELLED, (BookingStatus.PENDING, BookingStatus.CONFIRMED)
+            ):
+                st.rerun()
+            else:
+                st.warning("This booking has already been canceled or removed.")
 
 # ============================================================
 # REPORTS
