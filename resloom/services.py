@@ -498,8 +498,8 @@ def create_recurring_bookings(
     Supports 'weekly'. Raises ValueError before writing if any occurrence would
     overlap existing active bookings or another occurrence in the same series.
     """
-    group_id = base.recurrence_group_id or str(uuid.uuid4())
-    base.recurrence_group_id = group_id
+    if repeat != "none":
+        base.recurrence_group_id = base.recurrence_group_id or str(uuid.uuid4())
     candidates = [base]
 
     delta = timedelta(days=7)
@@ -514,7 +514,7 @@ def create_recurring_bookings(
                 purpose=base.purpose,
                 status=base.status,
                 is_blackout=base.is_blackout,
-                recurrence_group_id=group_id,
+                recurrence_group_id=base.recurrence_group_id,
             )
         )
 
